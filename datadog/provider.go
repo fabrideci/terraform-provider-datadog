@@ -423,3 +423,7 @@ func providerConfigure(ctx context.Context, d *schema.ResourceData) (interface{}
 		Now: time.Now,
 	}, nil
 }
+
+func (pc *ProviderConfiguration) DatadogApiClient() utils.DatadogApiClient {
+	return utils.NewDatadogApiClient(pc.DatadogApiInstances.HttpClient, pc.Auth)
+}

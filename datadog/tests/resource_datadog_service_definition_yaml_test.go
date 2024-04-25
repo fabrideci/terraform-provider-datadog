@@ -300,12 +300,10 @@ func checkServiceDefinitionExists(accProvider func() (*schema.Provider, error)) 
 	return func(s *terraform.State) error {
 		provider, _ := accProvider()
 		providerConf := provider.Meta().(*datadog.ProviderConfiguration)
-		httpClient := providerConf.DatadogApiInstances.HttpClient
-		auth := providerConf.Auth
 
 		for _, r := range s.RootModule().Resources {
 			err := utils.Retry(5000*time.Millisecond, 4, func() error {
-				if _, _, err := utils.SendRequest(auth, httpClient, "GET", "/api/v2/services/definitions/"+r.Primary.ID, nil); err != nil {
+				if _, _, err := providerConf.DatadogApiClient().SendRequest("GET", "/api/v2/services/definitions/"+r.Primary.ID, nil); err != nil {
 					return &utils.RetryableError{Prob: fmt.Sprintf("received an error retrieving service %s", err)}
 				}
 				return nil
@@ -322,12 +320,10 @@ func testAccCheckDatadogServiceDefinitionDestroy(accProvider func() (*schema.Pro
 	return func(s *terraform.State) error {
 		provider, _ := accProvider()
 		providerConf := provider.Meta().(*datadog.ProviderConfiguration)
-		httpClient := providerConf.DatadogApiInstances.HttpClient
-		auth := providerConf.Auth
 
 		for _, r := range s.RootModule().Resources {
 			err := utils.Retry(200*time.Millisecond, 4, func() error {
-				if _, httpResp, err := utils.SendRequest(auth, httpClient, "GET", "/api/v2/services/definitions/"+r.Primary.ID, nil); err != nil {
+				if _, httpResp, err := providerConf.DatadogApiClient().SendRequest("GET", "/api/v2/services/definitions/"+r.Primary.ID, nil); err != nil {
 					if httpResp != nil && httpResp.StatusCode != 404 {
 						return &utils.RetryableError{Prob: "service still exists"}
 					}

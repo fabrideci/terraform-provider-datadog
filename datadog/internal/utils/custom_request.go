@@ -9,14 +9,27 @@ import (
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadog"
 )
 
-// SendRequest send custom request
-func SendRequest(ctx context.Context, client *datadog.APIClient, method, path string, body interface{}) ([]byte, *http.Response, error) {
-	req, err := buildRequest(ctx, client, method, path, body)
+// DatadogApiClient is a custom HTTP client used to interact with some Datadog APIs not available in datadog-api-client-go
+type DatadogApiClient interface {
+	SendRequest(method, path string, body any) ([]byte, *http.Response, error)
+}
+
+func NewDatadogApiClient(client *datadog.APIClient, auth context.Context) DatadogApiClient {
+	return customClientImpl{client, auth}
+}
+
+type customClientImpl struct {
+	client *datadog.APIClient
+	auth   context.Context
+}
+
+func (c customClientImpl) SendRequest(method, path string, body any) ([]byte, *http.Response, error) {
+	req, err := c.buildRequest(method, path, body)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	httpRes, err := client.CallAPI(req)
+	httpRes, err := c.client.CallAPI(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -39,7 +52,7 @@ func SendRequest(ctx context.Context, client *datadog.APIClient, method, path st
 	return bodyResByte, httpRes, nil
 }
 
-func buildRequest(ctx context.Context, client *datadog.APIClient, method, path string, body interface{}) (*http.Request, error) {
+func (c customClientImpl) buildRequest(method, path string, body interface{}) (*http.Request, error) {
 	var (
 		localVarPostBody        interface{}
 		localVarPath            string
@@ -48,7 +61,7 @@ func buildRequest(ctx context.Context, client *datadog.APIClient, method, path s
 		localVarFormFile        *datadog.FormFile
 	)
 
-	localBasePath, err := client.GetConfig().ServerURLWithContext(ctx, "")
+	localBasePath, err := c.client.GetConfig().ServerURLWithContext(c.auth, "")
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +77,8 @@ func buildRequest(ctx context.Context, client *datadog.APIClient, method, path s
 		localVarPostBody = body
 	}
 
-	if ctx != nil {
-		if auth, ok := ctx.Value(datadog.ContextAPIKeys).(map[string]datadog.APIKey); ok {
+	if c.auth != nil {
+		if auth, ok := c.auth.Value(datadog.ContextAPIKeys).(map[string]datadog.APIKey); ok {
 			if apiKey, ok := auth["apiKeyAuth"]; ok {
 				var key string
 				if apiKey.Prefix != "" {
@@ -77,8 +90,8 @@ func buildRequest(ctx context.Context, client *datadog.APIClient, method, path s
 			}
 		}
 	}
-	if ctx != nil {
-		if auth, ok := ctx.Value(datadog.ContextAPIKeys).(map[string]datadog.APIKey); ok {
+	if c.auth != nil {
+		if auth, ok := c.auth.Value(datadog.ContextAPIKeys).(map[string]datadog.APIKey); ok {
 			if apiKey, ok := auth["appKeyAuth"]; ok {
 				var key string
 				if apiKey.Prefix != "" {
@@ -91,12 +104,7 @@ func buildRequest(ctx context.Context, client *datadog.APIClient, method, path s
 		}
 	}
 
-	req, err := client.PrepareRequest(ctx, localVarPath, method, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormQueryParams, localVarFormFile)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
+	return c.client.PrepareRequest(c.auth, localVarPath, method, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormQueryParams, localVarFormFile)
 }
 
 // CustomRequestAPIError Provides access to the body, and error on returned errors.

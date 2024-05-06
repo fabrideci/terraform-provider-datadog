@@ -2,13 +2,15 @@ package datadog
 
 import (
 	"context"
-
-	"github.com/terraform-providers/terraform-provider-datadog/datadog/internal/utils"
+	"encoding/json"
 
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadogV1"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+
+	"github.com/terraform-providers/terraform-provider-datadog/datadog/internal/utils"
+	"github.com/terraform-providers/terraform-provider-datadog/datadog/internal/validators"
 )
 
 func resourceDatadogOrganizationSettings() *schema.Resource {
@@ -40,6 +42,17 @@ func resourceDatadogOrganizationSettings() *schema.Resource {
 					Type:        schema.TypeString,
 					Computed:    true,
 				},
+				"security_contacts": {
+					Type:        schema.TypeList,
+					Optional:    true,
+					Computed:    true,
+					Description: "List of emails used for security event notifications from the organization.",
+					Elem: &schema.Schema{
+						Type:             schema.TypeString,
+						Description:      "An email address to be used for security event notifications.",
+						ValidateDiagFunc: validators.ValidateBasicEmail,
+					},
+				},
 				"settings": {
 					Description: "Organization settings",
 					Type:        schema.TypeList,
@@ -51,7 +64,7 @@ func resourceDatadogOrganizationSettings() *schema.Resource {
 							"private_widget_share": {
 								Type:        schema.TypeBool,
 								Optional:    true,
-								Default:     false,
+								Default:     false, // FIXME: leave it "unspecified" by default like the child org schema ?
 								Description: "Whether or not the organization users can share widgets outside of Datadog.",
 							},
 							"saml": {
@@ -73,7 +86,7 @@ func resourceDatadogOrganizationSettings() *schema.Resource {
 							"saml_autocreate_access_role": {
 								Type:         schema.TypeString,
 								Optional:     true,
-								Default:      "st",
+								Default:      "st", // FIXME: leave it "unspecified" by default like the child org schema ?
 								Description:  "The access role of the user. Options are `st` (standard user), `adm` (admin user), or `ro` (read-only user). Allowed enum values: `st`, `adm` , `ro`, `ERROR`",
 								ValidateFunc: validation.StringInSlice([]string{"st", "adm", "ro", "ERROR"}, false),
 							},
@@ -253,6 +266,7 @@ func buildDatadogOrganizationUpdateV1Struct(d *schema.ResourceData) *datadogV1.O
 }
 
 func resourceDatadogOrganizationSettingsCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	// note: we don't actually create a new organization, we just import the org associated with the current API/APP keys
 	providerConf := meta.(*ProviderConfiguration)
 	apiInstances := providerConf.DatadogApiInstances
 	auth := providerConf.Auth
@@ -286,11 +300,11 @@ func resourceDatadogOrganizationSettingsRead(ctx context.Context, d *schema.Reso
 		}
 		return utils.TranslateClientErrorDiag(err, httpResponse, "error getting organization")
 	}
-
 	org := resp.GetOrg()
-	d.SetId(org.GetPublicId())
 
-	return updateOrganizationState(d, &org)
+	diags := updateOrganizationState(d, &org)
+	diags = append(diags, readSecurityContacts(providerConf, d)...)
+	return diags
 }
 
 func resourceDatadogOrganizationSettingsUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -302,13 +316,11 @@ func resourceDatadogOrganizationSettingsUpdate(ctx context.Context, d *schema.Re
 	if err != nil {
 		return utils.TranslateClientErrorDiag(err, httpResponse, "error updating organization")
 	}
-
 	org := resp.GetOrg()
 
-	publicId := org.GetPublicId()
-	d.SetId(publicId)
-
-	return updateOrganizationState(d, &org)
+	diags := updateOrganizationState(d, &org)
+	diags = append(diags, updateSecurityContacts(providerConf, d)...)
+	return diags
 }
 
 func resourceDatadogOrganizationSettingsDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -319,4 +331,68 @@ func resourceDatadogOrganizationSettingsDelete(ctx context.Context, d *schema.Re
 		Summary:  "Cannot delete organization settings.",
 		Detail:   "Remove organization by contacting support (https://docs.datadoghq.com/help/).",
 	})
+}
+
+/// Security Contacts ///
+
+// /api/v2/org_configs is not (yet) available in datadog-api-client-go, but it's easy enough to use it manually
+type apiOrgConfig[T any] struct {
+	Data apiOrgConfigData[T] `json:"data"`
+}
+type apiOrgConfigData[T any] struct {
+	Type       string                    `json:"type"`
+	Attributes apiOrgConfigAttributes[T] `json:"attributes"`
+}
+type apiOrgConfigAttributes[T any] struct {
+	Value T `json:"value"`
+	// we don't care about the other fields
+}
+
+type apiSecurityContacts = apiOrgConfig[[]string]
+
+func readSecurityContacts(pc *ProviderConfiguration, d *schema.ResourceData) diag.Diagnostics {
+	body, resp, err := pc.DatadogApiClient().SendRequest("GET", "/api/v2/org_configs/security_contacts", nil)
+	if err != nil {
+		// this API should not return 404, a default config value is always provided
+		return utils.TranslateClientErrorDiag(err, resp, "error getting security_contacts")
+	}
+
+	return updateSecurityContactState(body, d)
+}
+
+func updateSecurityContacts(pc *ProviderConfiguration, d *schema.ResourceData) diag.Diagnostics {
+	if d.IsNewResource() {
+		diags := readSecurityContacts(pc, d)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if !d.HasChange("security_contacts") {
+		return nil
+	}
+	_, newValue := d.GetChange("security_contacts")
+
+	body, resp, err := pc.DatadogApiClient().SendRequest("PATCH", "/api/v2/org_configs/security_contacts", &apiSecurityContacts{
+		Data: apiOrgConfigData[[]string]{
+			Type: "org_configs", // required by the API
+			Attributes: apiOrgConfigAttributes[[]string]{
+				Value: utils.AnyToSlice[string](newValue),
+			},
+		},
+	})
+	if err != nil {
+		return utils.TranslateClientErrorDiag(err, resp, "error setting security_contacts")
+	}
+
+	return updateSecurityContactState(body, d)
+}
+
+func updateSecurityContactState(rawJson []byte, d *schema.ResourceData) diag.Diagnostics {
+	var apiValue apiSecurityContacts
+	err := json.Unmarshal(rawJson, &apiValue)
+	if err != nil {
+		return diag.Errorf("error parsing security_contacts: %s", err)
+	}
+
+	return diag.FromErr(d.Set("security_contacts", apiValue.Data.Attributes.Value))
 }

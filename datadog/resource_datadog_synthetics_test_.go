@@ -1215,6 +1215,7 @@ func syntheticsFollowRedirectsOption() *schema.Schema {
 
 func syntheticsHttpVersionOption() *schema.Schema {
 	return &schema.Schema{
+		Default:          datadogV1.SYNTHETICSTESTOPTIONSHTTPVERSION_ANY,
 		Description:      "HTTP version to use for an HTTP request in an API test or step.",
 		Type:             schema.TypeString,
 		Optional:         true,
